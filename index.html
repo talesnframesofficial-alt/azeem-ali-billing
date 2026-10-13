@@ -562,6 +562,7 @@ function makeDb(client){
     return api;
   }
   return {
+    refresh(table){ notify(table); },
     collection(table){ return collRef(table); },
     doc(path){
       if(path==='meta/settings'){
@@ -1390,36 +1391,34 @@ function renderSiItems(){
 document.getElementById('siClearBtn').addEventListener('click', ()=>{
   siItems=[]; document.getElementById('supName').value=''; document.getElementById('supRef').value=''; renderSiItems();
 });
+let siSaving = false;
 document.getElementById('siSaveBtn').addEventListener('click', async ()=>{
+  if(siSaving) return;
   if(siItems.length===0){ toast('Add at least one item'); return; }
   if(!db){ toast('Storage unavailable'); return; }
-  const total = siItems.reduce((s,i)=>s+i.qty*i.cost,0);
-  const entry = {
-    createdAt: new Date().toISOString(),
-    supplier: document.getElementById('supName').value.trim(),
-    ref: document.getElementById('supRef').value.trim(),
-    items: siItems.map(i=>({name:i.name, brand:i.brand||'', qty:i.qty, cost:i.cost})),
-    total
-  };
+  const btn = document.getElementById('siSaveBtn');
+  const label = btn.textContent;
+  siSaving = true; btn.disabled = true; btn.textContent = 'Saving…';
   try{
-    await db.collection('purchases').add(entry);
-    const updates = [];
-    for(const it of siItems){
-      let p = null;
-      try{
-        const snap = await db.collection('products').doc(it.pid).get();
-        if(snap.exists) p = {id:snap.id, ...snap.data()};
-      }catch(e){ p = products.find(x=>x.id===it.pid) || null; }
-      const oldStock = Number(p?.stock||0), oldCost = Number(p?.costPrice||0);
-      const newStock = oldStock + it.qty;
-      const newCost = newStock>0 ? ((oldStock*oldCost)+(it.qty*it.cost))/newStock : it.cost;
-      await db.collection('products').doc(it.pid).update({stock:newStock, costPrice:newCost});
-      updates.push({name:it.name, newCost});
-    }
-    toast(updates.length===1 ? `Saved — ${updates[0].name} avg cost now ₹${updates[0].newCost.toFixed(2)}` : `Stock saved — avg cost updated for ${updates.length} items`);
-    siItems=[]; renderSiItems();
+    const items = siItems.map(i=>({pid:i.pid, name:i.name, brand:i.brand||'', qty:i.qty, cost:i.cost}));
+    // One database call: the purchase record and every stock/cost update succeed together or not at all.
+    const { data, error } = await sbClient.rpc('receive_stock', {
+      p_supplier: document.getElementById('supName').value.trim(),
+      p_ref: document.getElementById('supRef').value.trim(),
+      p_items: items
+    });
+    if(error) throw error;
+    toast('Stock saved — '+(data && data.count != null ? data.count : items.length)+' item(s) added');
+    siItems = []; renderSiItems();
     document.getElementById('supName').value=''; document.getElementById('supRef').value='';
-  }catch(e){ toast('Could not save'); }
+    db.refresh('products'); db.refresh('purchases');
+  }catch(e){
+    console.error(e);
+    if(e && e.code==='PGRST202') toast('Setup step missing: run the receive_stock SQL in Supabase first');
+    else toast('Not saved, nothing was changed. Your list is still here — try again.');
+  }finally{
+    siSaving = false; btn.disabled = false; btn.textContent = label;
+  }
 });
 
 // ---- settings ----
