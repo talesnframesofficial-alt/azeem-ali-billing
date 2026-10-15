@@ -987,7 +987,7 @@ async function findOrCreateCustomer(name, phone, gstin){
   const ref = await db.collection('customers').add({name, phone:phone||'', gstin:gstin||''});
   return ref.id;
 }
-async function saveBill(){
+async function saveBillInner(){
   if(currentItems.length===0){ toast('Add at least one item'); return; }
   if(!db){ toast('Storage unavailable'); return; }
   const {isGst, subtotal, gstAmt, total} = calcTotals();
@@ -1025,6 +1025,16 @@ async function saveBill(){
     currentItems = []; renderBillItems();
     document.getElementById('custName').value=''; document.getElementById('custPhone').value=''; document.getElementById('custGst').value=''; document.getElementById('amountPaid').value='';
   }catch(e){ toast('Could not save bill'); }
+}
+let billSaving = false;
+async function saveBill(){
+  if(billSaving) return;
+  billSaving = true;
+  const btn = document.getElementById('saveBillBtn');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try{ await saveBillInner(); }
+  finally{ billSaving = false; btn.disabled = false; btn.textContent = label; }
 }
 document.getElementById('saveBillBtn').addEventListener('click', saveBill);
 
@@ -1088,27 +1098,46 @@ function renderHistory(){
   tb.querySelectorAll('[data-voidbill]').forEach(btn=>btn.addEventListener('click', ()=>voidBillBtn(btn.dataset.voidbill)));
   tb.querySelectorAll('[data-editbill]').forEach(btn=>btn.addEventListener('click', ()=>editBill(btn.dataset.editbill)));
 }
+function productForItem(it){
+  const nm = (it.name||'').trim().toLowerCase(), br = (it.brand||'').trim().toLowerCase();
+  const exact = products.filter(p=>(p.name||'').trim().toLowerCase()===nm && (p.brand||'').trim().toLowerCase()===br);
+  if(exact.length===1) return exact[0];
+  const sameName = products.filter(p=>(p.name||'').trim().toLowerCase()===nm);
+  return sameName.length===1 ? sameName[0] : null; // never guess between two brands with the same name
+}
+const voidingNow = new Set();
 async function doVoidBill(id){
-  const b = bills.find(x=>x.id===id); if(!b || b.voided) return false;
+  const b = bills.find(x=>x.id===id);
+  if(!b || b.voided || voidingNow.has(id)) return false;
+  voidingNow.add(id);
   try{
     await db.collection('bills').doc(id).update({voided:true, voidedAt:new Date().toISOString()});
+    b.voided = true; // a quick second tap can no longer restore the stock twice
+    const skipped = [];
     for(const it of (b.items||[])){
-      const p = products.find(x=>x.name===it.name);
-      if(p) await db.collection('products').doc(p.id).update({stock:(p.stock||0)+Number(it.qty)});
+      const p = productForItem(it);
+      if(!p){ skipped.push((it.brand?it.brand+' ':'')+it.name); continue; }
+      const back = (Number(p.stock)||0) + Number(it.qty);
+      await db.collection('products').doc(p.id).update({stock: back});
+      p.stock = back;
     }
-    return true;
-  }catch(e){ return false; }
+    return skipped; // [] means everything was restored
+  }catch(e){ console.error(e); return false; }
+  finally{ voidingNow.delete(id); }
 }
 async function voidBillBtn(id){
   if(!confirm('Void this bill? Its stock will be added back and it will no longer count in reports.')) return;
-  const ok = await doVoidBill(id);
-  toast(ok?'Bill voided':'Could not void');
+  const r = await doVoidBill(id);
+  if(!r) toast('Could not void');
+  else if(r.length) alert('Bill voided, but stock was NOT added back for: '+r.join(', ')+'.\nCorrect it in Products.');
+  else toast('Bill voided — stock added back');
 }
 async function editBill(id){
   const b = bills.find(x=>x.id===id); if(!b || b.voided) return;
   if(!confirm('This voids the original bill and loads its items into New Bill so you can correct and re-save. Continue?')) return;
   const ok = await doVoidBill(id);
   if(!ok){ toast('Could not edit'); return; }
+  if(ok.length) alert('Original voided, but stock was NOT added back for: '+ok.join(', ')+'.\nCorrect it in Products.');
   document.querySelector('nav button[data-tab="bill"]').click();
   document.getElementById('custName').value = b.customerName==='Walk-in customer' ? '' : b.customerName;
   document.getElementById('custPhone').value = b.customerPhone||'';
@@ -1116,8 +1145,8 @@ async function editBill(id){
   document.getElementById('billType').value = b.type;
   document.getElementById('billType').dispatchEvent(new Event('change'));
   currentItems = (b.items||[]).map(it=>{
-    const p = products.find(x=>x.name===it.name);
-    return {pid:p?p.id:null, name:it.name, price:it.price, gstRate:it.gstRate, costPrice:it.costPrice||0, qty:it.qty};
+    const p = productForItem(it);
+    return {pid:p?p.id:null, name:it.name, brand:it.brand||'', price:it.price, gstRate:it.gstRate, costPrice:it.costPrice||0, qty:it.qty};
   });
   renderBillItems();
   toast('Original voided — adjust items and save');
