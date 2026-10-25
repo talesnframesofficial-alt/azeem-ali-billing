@@ -177,6 +177,7 @@ tr.void td{text-decoration:line-through; color:var(--muted)}
         <select id="itemProduct"><option value="">Select product…</option></select>
       </div>
       <div class="field" style="max-width:90px;"><label>Qty</label><input type="number" id="itemQty" value="1" min="0.01" step="0.01"></div>
+      <div class="field" style="max-width:90px;"><label>Disc %</label><input type="number" id="itemDisc" min="0" max="100" step="0.01" placeholder="0"></div>
       <div><button class="btn secondary" id="addItemBtn" style="margin-top:18px;">Add</button></div>
     </div>
     <p class="muted" id="noProductsHint" style="display:none;">No products saved yet — add some in the Products tab first.</p>
@@ -186,11 +187,15 @@ tr.void td{text-decoration:line-through; color:var(--muted)}
     <h3>Items</h3>
     <div class="overflow">
     <table id="billItemsTable">
-      <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Amount</th><th></th></tr></thead>
+      <thead><tr><th>Item</th><th>Qty</th><th>Rate</th><th>Disc %</th><th>Amount</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     </div>
     <p class="muted" id="emptyItemsMsg">No items added yet.</p>
+    <div class="row" style="margin-top:10px; align-items:flex-end;">
+      <div class="field" style="max-width:150px;"><label>Extra discount on whole bill</label><input type="number" id="billDisc" min="0" step="0.01" placeholder="0"></div>
+      <div class="field" style="max-width:80px;"><label>&nbsp;</label><select id="billDiscType"><option value="amt">₹</option><option value="pct">%</option></select></div>
+    </div>
     <div id="billTotals" style="margin-top:10px;"></div>
   </div>
 
@@ -241,6 +246,15 @@ Snacks, Lays, Lays Classic 50g, 20, 15, pc, 18, 100, 20"></textarea>
       <span class="muted" id="bulkStatus"></span>
     </div>
   </div>
+  <div class="card hidden" id="batchCard">
+    <div class="row" style="justify-content:space-between;">
+      <h3 style="margin:0;" id="batchTitle">Batches</h3>
+      <button class="btn secondary small" id="batchClose">Close</button>
+    </div>
+    <p class="muted">Oldest batch is sold first. The cost of each sale comes from the batch it was taken from.</p>
+    <div class="overflow"><table class="wide" id="batchTable"><thead><tr><th>Received</th><th>From</th><th class="num">Received qty</th><th class="num">Left</th><th class="num">Cost/unit</th><th class="num">Value left</th></tr></thead><tbody></tbody></table></div>
+    <div class="tot grand" id="batchTotal"></div>
+  </div>
   <div class="card">
     <div class="row" style="justify-content:space-between;">
       <h3 style="margin:0;">Product list</h3>
@@ -252,7 +266,7 @@ Snacks, Lays, Lays Classic 50g, 20, 15, pc, 18, 100, 20"></textarea>
     </div>
     <div class="overflow">
     <table id="productsTable" class="wide">
-      <thead><tr><th>Category</th><th>Brand</th><th>Name</th><th>Price</th><th>Avg. Cost</th><th>Unit</th><th>GST</th><th>Stock</th><th></th></tr></thead>
+      <thead><tr><th>Category</th><th>Brand</th><th>Name</th><th>Price</th><th>Cost (next batch)</th><th>Unit</th><th>GST</th><th>Stock</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     </div>
@@ -287,7 +301,7 @@ Snacks, Lays, Lays Classic 50g, 20, 15, pc, 18, 100, 20"></textarea>
   <div class="card">
     <h3>Items received</h3>
     <div class="overflow">
-    <table id="siItemsTable" class="wide"><thead><tr><th>Item</th><th>Qty</th><th>Cost/unit</th><th>Amount</th><th>New avg. cost</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="siItemsTable" class="wide"><thead><tr><th>Item</th><th>Qty</th><th>Cost/unit</th><th>Amount</th><th>New batch</th><th></th></tr></thead><tbody></tbody></table>
     </div>
     <p class="muted" id="siEmptyMsg">No items added yet.</p>
     <div class="tot grand" id="siTotal" style="margin-top:8px;"></div>
@@ -601,7 +615,7 @@ function startApp(){
   if(appStarted) return;
   appStarted = true;
   db = makeDb(sbClient);
-  loadProducts(); loadBills(); loadCustomers(); loadPurchases(); loadPayments(); loadSettings();
+  loadProducts(); loadBatches(); loadBills(); loadCustomers(); loadPurchases(); loadPayments(); loadSettings();
 }
 document.getElementById('loginBtn').addEventListener('click', async ()=>{
   const email = document.getElementById('loginEmail').value.trim();
@@ -639,6 +653,12 @@ function loadProducts(){
     renderProductSelect();
     renderProductsTable();
     renderSiItems();
+  }, err=>console.error(err));
+}
+function loadBatches(){
+  db.collection('stock_batches').where('qtyLeft','>',0).onSnapshot(snap=>{
+    stockBatches = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    if(batchShownId && !document.getElementById('batchCard').classList.contains('hidden')) showBatches(batchShownId);
   }, err=>console.error(err));
 }
 function loadBills(){
@@ -829,12 +849,30 @@ function renderProductsTable(){
       <td>${escapeHtml(p.unit||'')}</td>
       <td>${p.gstRate}%</td>
       <td>${p.stock??0}</td>
-      <td><button class="iconbtn" data-edit="${p.id}">Edit</button> · <button class="iconbtn" data-del="${p.id}">Del</button></td>
+      <td><button class="iconbtn" data-batches="${p.id}">Batches</button> · <button class="iconbtn" data-edit="${p.id}">Edit</button> · <button class="iconbtn" data-del="${p.id}">Del</button></td>
     </tr>`).join('');
   document.getElementById('emptyProductsMsg').style.display = list.length? 'none':'block';
+  tb.querySelectorAll('[data-batches]').forEach(b=>b.addEventListener('click', ()=>showBatches(b.dataset.batches)));
   tb.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click', ()=>editProduct(b.dataset.edit)));
   tb.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click', ()=>delProduct(b.dataset.del)));
 }
+let stockBatches = [];
+let batchShownId = null;
+function showBatches(id){
+  const p = products.find(x=>x.id===id); if(!p) return;
+  batchShownId = id;
+  const list = stockBatches.filter(b=>b.productId===id && Number(b.qtyLeft)>0).sort((a,b)=>String(a.receivedAt).localeCompare(String(b.receivedAt)));
+  const have = list.reduce((t,b)=>t+Number(b.qtyLeft),0);
+  const unb = Math.max(Number(p.stock||0) - have, 0);
+  const rows = list.map(b=>`<tr><td>${new Date(b.receivedAt).getFullYear()<2001?'Opening':fmtDate(b.receivedAt)}</td><td>${escapeHtml(b.supplier||'—')}${b.ref?' <span class="muted">('+escapeHtml(b.ref)+')</span>':''}</td><td class="num">${Number(b.qtyIn)}</td><td class="num"><b>${Number(b.qtyLeft)}</b></td><td class="num">${inr(b.cost)}</td><td class="num">${inr(Number(b.qtyLeft)*Number(b.cost))}</td></tr>`);
+  if(unb>0) rows.push(`<tr><td>Not batched yet</td><td class="muted">Stock edited by hand — counted at ₹${Number(p.costPrice||0).toFixed(2)} when next sold</td><td class="num">—</td><td class="num"><b>${unb}</b></td><td class="num">${inr(p.costPrice)}</td><td class="num">${inr(unb*Number(p.costPrice||0))}</td></tr>`);
+  document.getElementById('batchTitle').textContent = 'Batches — '+itemLabelPlain(p)+' ('+(p.stock??0)+' in stock)';
+  document.querySelector('#batchTable tbody').innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No stock in hand.</td></tr>';
+  const val = list.reduce((t,b)=>t+Number(b.qtyLeft)*Number(b.cost),0) + unb*Number(p.costPrice||0);
+  document.getElementById('batchTotal').innerHTML = `<span>Stock value (at cost)</span><span>${inr(val)}</span>`;
+  const card = document.getElementById('batchCard'); card.classList.remove('hidden'); card.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+document.getElementById('batchClose').addEventListener('click', ()=>{ batchShownId=null; document.getElementById('batchCard').classList.add('hidden'); });
 function editProduct(id){
   const p = products.find(x=>x.id===id); if(!p) return;
   document.getElementById('pEditId').value = id;
@@ -924,15 +962,19 @@ document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
 });
 
 // ---- bill items ----
+const round2 = x => Math.round((Number(x)+Number.EPSILON)*100)/100;
+function itNet(it){ return Number(it.net!=null ? it.net : it.price); }   // unit price after all discounts
 document.getElementById('addItemBtn').addEventListener('click', ()=>{
   const pid = document.getElementById('itemProduct').value;
   const qty = parseFloat(document.getElementById('itemQty').value)||0;
+  const discPct = Math.min(Math.max(parseFloat(document.getElementById('itemDisc').value)||0,0),100);
   if(!pid || qty<=0) return;
   const p = products.find(x=>x.id===pid); if(!p) return;
-  const existing = currentItems.find(i=>i.pid===pid);
+  const existing = currentItems.find(i=>i.pid===pid && (Number(i.discPct)||0)===discPct);
   if(existing) existing.qty += qty;
-  else currentItems.push({pid, name:p.name, brand:p.brand||'', price:p.price, gstRate:p.gstRate, costPrice:p.costPrice||0, qty});
+  else currentItems.push({pid, name:p.name, brand:p.brand||'', price:p.price, gstRate:p.gstRate, costPrice:p.costPrice||0, qty, discPct});
   document.getElementById('itemQty').value = 1;
+  document.getElementById('itemDisc').value = '';
   renderBillItems();
 });
 function renderBillItems(){
@@ -942,37 +984,57 @@ function renderBillItems(){
       <td>${itemLabel(it)}</td>
       <td>${it.qty}</td>
       <td>₹${it.price.toFixed(2)}</td>
-      <td>₹${(it.qty*it.price).toFixed(2)}</td>
+      <td><input type="number" class="discin" data-disc="${idx}" min="0" max="100" step="0.01" value="${Number(it.discPct)||''}" placeholder="0" style="width:64px; padding:4px 6px;"></td>
+      <td data-amt="${idx}">₹${(it.qty*it.price*(1-(Number(it.discPct)||0)/100)).toFixed(2)}</td>
       <td><button class="iconbtn" data-rm="${idx}">✕</button></td>
     </tr>`).join('');
   document.getElementById('emptyItemsMsg').style.display = currentItems.length? 'none':'block';
   tb.querySelectorAll('[data-rm]').forEach(b=>b.addEventListener('click', ()=>{
     currentItems.splice(parseInt(b.dataset.rm),1); renderBillItems();
   }));
+  tb.querySelectorAll('[data-disc]').forEach(inp=>inp.addEventListener('input', ()=>{
+    const i = parseInt(inp.dataset.disc), it = currentItems[i]; if(!it) return;
+    it.discPct = Math.min(Math.max(parseFloat(inp.value)||0,0),100);
+    tb.querySelector('[data-amt="'+i+'"]').textContent = '₹'+(it.qty*it.price*(1-it.discPct/100)).toFixed(2);
+    renderTotals();
+  }));
   renderTotals();
 }
+// Discounts come off BEFORE GST, so GST is charged only on what the customer actually pays for.
 function calcTotals(){
   const isGst = document.getElementById('billType').value==='gst';
-  let subtotal=0, gstAmt=0;
-  currentItems.forEach(it=>{
-    const amt = it.qty*it.price;
-    subtotal += amt;
-    if(isGst) gstAmt += amt * (it.gstRate/100);
+  const lines = currentItems.map(it=>{
+    const gross = it.qty*it.price;
+    return {it, gross, afterItem: gross*(1-(Number(it.discPct)||0)/100)};
   });
-  return {isGst, subtotal, gstAmt, total: subtotal+gstAmt};
+  const sumAfter = lines.reduce((t,l)=>t+l.afterItem,0);
+  const dIn = Math.max(parseFloat(document.getElementById('billDisc').value)||0, 0);
+  const extra = document.getElementById('billDiscType').value==='pct' ? sumAfter*Math.min(dIn,100)/100 : Math.min(dIn, sumAfter);
+  const ratio = sumAfter>0 ? extra/sumAfter : 0;     // spread over items in proportion to their value
+  let subtotal=0, gstAmt=0, gross=0;
+  lines.forEach(l=>{
+    l.net = round2(l.afterItem*(1-ratio));
+    l.gst = isGst ? round2(l.net*(Number(l.it.gstRate)||0)/100) : 0;
+    subtotal += l.net; gstAmt += l.gst; gross += l.gross;
+  });
+  subtotal = round2(subtotal); gstAmt = round2(gstAmt); gross = round2(gross);
+  return {isGst, lines, grossTotal:gross, discount:round2(gross-subtotal), subtotal, gstAmt, total: round2(subtotal+gstAmt)};
 }
 function renderTotals(){
-  const {isGst, subtotal, gstAmt, total} = calcTotals();
+  const {isGst, subtotal, gstAmt, total, discount, grossTotal} = calcTotals();
   const cgst = gstAmt/2, sgst = gstAmt/2;
   document.getElementById('billTotals').innerHTML = `
+    ${discount>0.004? `<div class="tot"><span>Items total</span><span>₹${grossTotal.toFixed(2)}</span></div>
+    <div class="tot" style="color:var(--accent);"><span>Discount</span><span>− ₹${discount.toFixed(2)}</span></div>`:''}
     <div class="tot"><span>Subtotal</span><span>₹${subtotal.toFixed(2)}</span></div>
     ${isGst? `<div class="tot"><span>CGST</span><span>₹${cgst.toFixed(2)}</span></div>
     <div class="tot"><span>SGST</span><span>₹${sgst.toFixed(2)}</span></div>`:''}
     <div class="tot grand"><span>Total</span><span>₹${total.toFixed(2)}</span></div>`;
 }
+['billDisc','billDiscType','billType'].forEach(id=>{ const el=document.getElementById(id); el.addEventListener('input', renderTotals); el.addEventListener('change', renderTotals); });
 document.getElementById('clearBillBtn').addEventListener('click', ()=>{
   currentItems = []; document.getElementById('custName').value=''; document.getElementById('custPhone').value='';
-  document.getElementById('custGst').value=''; document.getElementById('amountPaid').value=''; renderBillItems();
+  document.getElementById('custGst').value=''; document.getElementById('amountPaid').value=''; document.getElementById('billDisc').value=''; renderBillItems();
 });
 
 async function nextInvoiceNumber(isGst, now){
@@ -990,11 +1052,7 @@ async function findOrCreateCustomer(name, phone, gstin){
 async function saveBillInner(){
   if(currentItems.length===0){ toast('Add at least one item'); return; }
   if(!db){ toast('Storage unavailable'); return; }
-  const {isGst, subtotal, gstAmt, total} = calcTotals();
-  const now = new Date();
-  let billNo;
-  try{ billNo = await nextInvoiceNumber(isGst, now); }
-  catch(e){ billNo = (isGst?'GST-':'B-')+now.getTime(); }
+  const T = calcTotals();
   const custNameInput = document.getElementById('custName').value.trim();
   const custPhone = document.getElementById('custPhone').value.trim();
   const custGst = document.getElementById('custGst').value.trim();
@@ -1003,28 +1061,31 @@ async function saveBillInner(){
     try{ customerId = await findOrCreateCustomer(custNameInput, custPhone, custGst); }catch(e){}
   }
   const paidInput = document.getElementById('amountPaid').value.trim();
-  const amountPaid = paidInput===''? total : Math.max(0, parseFloat(paidInput)||0);
-  const bill = {
-    billNo, createdAt: now.toISOString(),
-    customerId,
-    customerName: custNameInput||'Walk-in customer',
-    customerPhone: custPhone,
-    customerGst: custGst,
-    type: isGst?'gst':'simple',
-    items: currentItems.map(i=>({name:i.name, brand:i.brand||'', price:i.price, qty:i.qty, gstRate:i.gstRate, costPrice:i.costPrice||0})),
-    subtotal, gstAmt, total, amountPaid
+  const amountPaid = paidInput===''? T.total : Math.max(0, parseFloat(paidInput)||0);
+  const payload = {
+    type: T.isGst?'gst':'simple',
+    customerId, customerName: custNameInput||'Walk-in customer', customerPhone: custPhone, customerGst: custGst,
+    items: T.lines.map(l=>({
+      pid: l.it.pid||null, name: l.it.name, brand: l.it.brand||'', price: l.it.price, discPct: Number(l.it.discPct)||0,
+      net: l.it.qty>0 ? l.net/l.it.qty : l.it.price, qty: l.it.qty, gstRate: l.it.gstRate, costPrice: l.it.costPrice||0
+    })),
+    subtotal: T.subtotal, gstAmt: T.gstAmt, total: T.total, amountPaid, discount: T.discount
   };
   try{
-    await db.collection('bills').add(bill);
-    for(const it of currentItems){
-      const p = products.find(x=>x.id===it.pid);
-      if(p) await db.collection('products').doc(it.pid).update({stock:(p.stock||0)-it.qty});
-    }
+    // One database call: invoice number, FIFO cost, stock and the bill itself all succeed together or not at all.
+    const { data, error } = await sbClient.rpc('create_bill', { p_bill: payload });
+    if(error) throw error;
+    const bill = rowToCamel(data);
     toast('Bill saved');
     printBill(bill);
     currentItems = []; renderBillItems();
-    document.getElementById('custName').value=''; document.getElementById('custPhone').value=''; document.getElementById('custGst').value=''; document.getElementById('amountPaid').value='';
-  }catch(e){ toast('Could not save bill'); }
+    document.getElementById('custName').value=''; document.getElementById('custPhone').value=''; document.getElementById('custGst').value=''; document.getElementById('amountPaid').value=''; document.getElementById('billDisc').value='';
+    db.refresh('bills'); db.refresh('products'); db.refresh('stock_batches');
+  }catch(e){
+    console.error(e);
+    if(e && e.code==='PGRST202') toast('Setup step missing: run the FIFO SQL in Supabase first');
+    else toast('Could not save bill. Nothing was changed. Your items are still here — try again.');
+  }
 }
 let billSaving = false;
 async function saveBill(){
@@ -1040,9 +1101,10 @@ document.getElementById('saveBillBtn').addEventListener('click', saveBill);
 
 function printBill(bill){
   const isGst = bill.type==='gst';
+  const anyDisc = bill.items.some(it=>Number(it.discPct)>0);
   const rows = bill.items.map(it=>{
-    const amt = it.qty*it.price;
-    return `<tr><td>${(it.brand?escapeHtml(it.brand)+' ':'')+escapeHtml(it.name)}</td><td>${it.qty}</td><td>₹${it.price.toFixed(2)}</td>${isGst?`<td>${it.gstRate}%</td>`:''}<td>₹${amt.toFixed(2)}</td></tr>`;
+    const amt = it.qty*itNet(it);
+    return `<tr><td>${(it.brand?escapeHtml(it.brand)+' ':'')+escapeHtml(it.name)}</td><td>${it.qty}</td><td>₹${it.price.toFixed(2)}</td>${anyDisc?`<td>${Number(it.discPct)>0?Number(it.discPct)+'%':''}</td>`:''}${isGst?`<td>${it.gstRate}%</td>`:''}<td>₹${amt.toFixed(2)}</td></tr>`;
   }).join('');
   document.getElementById('printArea').innerHTML = `
     <div style="font-family:Arial,sans-serif; color:#000; padding:20px; max-width:480px; margin:0 auto;">
@@ -1053,10 +1115,11 @@ function printBill(bill){
       <p style="font-size:13px;"><b>${isGst?'Tax Invoice':'Bill'}</b> — ${bill.billNo}<br>Date: ${new Date(bill.createdAt).toLocaleString()}</p>
       <p style="font-size:13px;">Customer: ${escapeHtml(bill.customerName)} ${bill.customerPhone?('· '+escapeHtml(bill.customerPhone)):''}${bill.customerGst?('<br>GSTIN: '+escapeHtml(bill.customerGst)):''}</p>
       <table style="width:100%; border-collapse:collapse; font-size:13px;">
-        <thead><tr style="border-bottom:1px solid #000;"><th align="left">Item</th><th align="left">Qty</th><th align="left">Rate</th>${isGst?'<th align="left">GST</th>':''}<th align="left">Amount</th></tr></thead>
+        <thead><tr style="border-bottom:1px solid #000;"><th align="left">Item</th><th align="left">Qty</th><th align="left">Rate</th>${anyDisc?'<th align="left">Disc</th>':''}${isGst?'<th align="left">GST</th>':''}<th align="left">Amount</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       <hr>
+      ${Number(bill.discount)>0.004?`<p style="text-align:right; font-size:13px; margin:2px 0;">Items total: ₹${(Number(bill.subtotal)+Number(bill.discount)).toFixed(2)}</p><p style="text-align:right; font-size:13px; margin:2px 0;">Discount: − ₹${Number(bill.discount).toFixed(2)}</p>`:''}
       <p style="text-align:right; font-size:13px; margin:2px 0;">Subtotal: ₹${bill.subtotal.toFixed(2)}</p>
       ${isGst?`<p style="text-align:right; font-size:13px; margin:2px 0;">CGST: ₹${(bill.gstAmt/2).toFixed(2)}</p>
       <p style="text-align:right; font-size:13px; margin:2px 0;">SGST: ₹${(bill.gstAmt/2).toFixed(2)}</p>`:''}
@@ -1111,18 +1174,17 @@ async function doVoidBill(id){
   if(!b || b.voided || voidingNow.has(id)) return false;
   voidingNow.add(id);
   try{
-    await db.collection('bills').doc(id).update({voided:true, voidedAt:new Date().toISOString()});
-    b.voided = true; // a quick second tap can no longer restore the stock twice
-    const skipped = [];
-    for(const it of (b.items||[])){
-      const p = productForItem(it);
-      if(!p){ skipped.push((it.brand?it.brand+' ':'')+it.name); continue; }
-      const back = (Number(p.stock)||0) + Number(it.qty);
-      await db.collection('products').doc(p.id).update({stock: back});
-      p.stock = back;
-    }
-    return skipped; // [] means everything was restored
-  }catch(e){ console.error(e); return false; }
+    // One database call: stock goes back into the same batches it came from, and the bill is marked void.
+    const { data, error } = await sbClient.rpc('void_bill', { p_id: id });
+    if(error) throw error;
+    b.voided = true;
+    db.refresh('bills'); db.refresh('products'); db.refresh('stock_batches');
+    return (data && data.skipped) || [];   // [] means everything was restored
+  }catch(e){
+    console.error(e);
+    if(e && e.code==='PGRST202') toast('Setup step missing: run the FIFO SQL in Supabase first');
+    return false;
+  }
   finally{ voidingNow.delete(id); }
 }
 async function voidBillBtn(id){
@@ -1145,9 +1207,13 @@ async function editBill(id){
   document.getElementById('billType').value = b.type;
   document.getElementById('billType').dispatchEvent(new Event('change'));
   currentItems = (b.items||[]).map(it=>{
-    const p = productForItem(it);
-    return {pid:p?p.id:null, name:it.name, brand:it.brand||'', price:it.price, gstRate:it.gstRate, costPrice:it.costPrice||0, qty:it.qty};
+    const p = (it.pid && products.find(x=>x.id===it.pid)) || productForItem(it);
+    return {pid:p?p.id:null, name:it.name, brand:it.brand||'', price:it.price, gstRate:it.gstRate, costPrice:it.costPrice||0, qty:it.qty, discPct:Number(it.discPct)||0};
   });
+  const itemLevel = (b.items||[]).reduce((t,it)=>t+Number(it.qty)*Number(it.price)*(Number(it.discPct)||0)/100,0);
+  const extra = round2(Number(b.discount||0) - itemLevel);
+  document.getElementById('billDiscType').value = 'amt';
+  document.getElementById('billDisc').value = extra>0.01 ? extra.toFixed(2) : '';
   renderBillItems();
   toast('Original voided — adjust items and save');
 }
@@ -1171,7 +1237,7 @@ function effectiveCost(it){
   return p ? Number(p.costPrice||0) : 0;
 }
 function billProfit(b){
-  return (b.items||[]).reduce((s,it)=> s + (Number(it.price)-effectiveCost(it))*Number(it.qty), 0);
+  return (b.items||[]).reduce((s,it)=> s + (itNet(it)-effectiveCost(it))*Number(it.qty), 0);
 }
 function renderReports(){
   const active = bills.filter(b=>!b.voided);
@@ -1206,8 +1272,8 @@ function renderReports(){
     if(!map[key]) map[key] = {label: itemLabelPlain(it), qty:0, rev:0, profit:0};
     const cost = effectiveCost(it);
     map[key].qty += Number(it.qty);
-    map[key].rev += Number(it.qty)*Number(it.price);
-    map[key].profit += Number(it.qty)*(Number(it.price)-cost);
+    map[key].rev += Number(it.qty)*itNet(it);
+    map[key].profit += Number(it.qty)*(itNet(it)-cost);
   }));
   const top = Object.values(map).sort((a,b)=>b.rev-a.rev).slice(0,10);
   document.querySelector('#topProductsTable tbody').innerHTML = top.map(v=>`
@@ -1339,7 +1405,7 @@ async function renderDaily(){
     const key = itemKey(it);
     const m = map[key] || (map[key] = {label: itemLabelPlain(it), qty:0, rev:0, profit:0});
     const cost = effectiveCost(it); if(cost===0) noCost = true;
-    m.qty += Number(it.qty); m.rev += Number(it.qty)*Number(it.price); m.profit += Number(it.qty)*(Number(it.price)-cost);
+    m.qty += Number(it.qty); m.rev += Number(it.qty)*itNet(it); m.profit += Number(it.qty)*(itNet(it)-cost);
   }));
   document.getElementById('dayCostHint').style.display = noCost ? 'block':'none';
   const prods = Object.values(map).sort((a,b)=>b.rev-a.rev);
@@ -1394,11 +1460,9 @@ document.getElementById('siAddBtn').addEventListener('click', ()=>{
   const cost = parseFloat(document.getElementById('siCost').value)||0;
   if(!pid||qty<=0) return;
   const p = products.find(x=>x.id===pid); if(!p) return;
-  const existing = siItems.find(i=>i.pid===pid);
-  if(existing){
-    const combinedCost = ((existing.qty*existing.cost)+(qty*cost))/(existing.qty+qty);
-    existing.qty += qty; existing.cost = combinedCost;
-  }
+  // Same product at the SAME cost joins one line; a different cost stays its own batch.
+  const existing = siItems.find(i=>i.pid===pid && Number(i.cost)===cost);
+  if(existing) existing.qty += qty;
   else siItems.push({pid, name:p.name, brand:p.brand||'', qty, cost});
   document.getElementById('siQty').value=1; document.getElementById('siCost').value='';
   renderSiItems();
@@ -1407,10 +1471,8 @@ function renderSiItems(){
   const tb = document.querySelector('#siItemsTable tbody');
   tb.innerHTML = siItems.map((it,idx)=>{
     const p = products.find(x=>x.id===it.pid);
-    const oldStock = Number(p?.stock||0), oldCost = Number(p?.costPrice||0);
-    const newStock = oldStock+it.qty;
-    const newAvg = newStock>0 ? ((oldStock*oldCost)+(it.qty*it.cost))/newStock : it.cost;
-    return `<tr><td>${itemLabel(it)}</td><td>${it.qty}</td><td>₹${it.cost.toFixed(2)}</td><td>₹${(it.qty*it.cost).toFixed(2)}</td><td class="muted">was ₹${oldCost.toFixed(2)} → <b style="color:var(--accent);">₹${newAvg.toFixed(2)}</b></td><td><button class="iconbtn" data-simrm="${idx}">✕</button></td></tr>`;
+    const oldStock = Math.max(Number(p?.stock||0),0);
+    return `<tr><td>${itemLabel(it)}</td><td>${it.qty}</td><td>₹${it.cost.toFixed(2)}</td><td>₹${(it.qty*it.cost).toFixed(2)}</td><td class="muted">New batch of ${it.qty} @ ₹${it.cost.toFixed(2)}${oldStock>0?'<br>sold after the '+oldStock+' already in stock':''}</td><td><button class="iconbtn" data-simrm="${idx}">✕</button></td></tr>`;
   }).join('');
   document.getElementById('siEmptyMsg').style.display = siItems.length?'none':'block';
   tb.querySelectorAll('[data-simrm]').forEach(b=>b.addEventListener('click', ()=>{siItems.splice(parseInt(b.dataset.simrm),1); renderSiItems();}));
@@ -1440,7 +1502,7 @@ document.getElementById('siSaveBtn').addEventListener('click', async ()=>{
     toast('Stock saved — '+(data && data.count != null ? data.count : items.length)+' item(s) added');
     siItems = []; renderSiItems();
     document.getElementById('supName').value=''; document.getElementById('supRef').value='';
-    db.refresh('products'); db.refresh('purchases');
+    db.refresh('products'); db.refresh('purchases'); db.refresh('stock_batches');
   }catch(e){
     console.error(e);
     if(e && e.code==='PGRST202') toast('Setup step missing: run the receive_stock SQL in Supabase first');
