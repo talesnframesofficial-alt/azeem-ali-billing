@@ -883,7 +883,9 @@ function editProduct(id){
   document.getElementById('pUnit').value = p.unit||'pc';
   document.getElementById('pGst').value = p.gstRate;
   document.getElementById('pStock').value = p.stock??0;
+  document.getElementById('pStock').dataset.orig = String(p.stock??0);
   document.getElementById('pCost').value = p.costPrice??'';
+  document.getElementById('pCost').dataset.orig = String(p.costPrice??'');
   document.getElementById('pReorder').value = p.reorderLevel??'';
   document.getElementById('cancelEditBtn').classList.remove('hidden');
 }
@@ -895,8 +897,8 @@ document.getElementById('cancelEditBtn').addEventListener('click', ()=>{
   document.getElementById('pPrice').value='';
   document.getElementById('pUnit').value='pc';
   document.getElementById('pGst').value='0';
-  document.getElementById('pStock').value='0';
-  document.getElementById('pCost').value='';
+  document.getElementById('pStock').value='0'; delete document.getElementById('pStock').dataset.orig;
+  document.getElementById('pCost').value=''; delete document.getElementById('pCost').dataset.orig;
   document.getElementById('pReorder').value='';
   document.getElementById('cancelEditBtn').classList.add('hidden');
 });
@@ -954,7 +956,15 @@ document.getElementById('saveProductBtn').addEventListener('click', async ()=>{
   if(!db){ toast('Storage unavailable'); return; }
   const id = document.getElementById('pEditId').value;
   try{
-    if(id) await db.collection('products').doc(id).set({name, brand, category, price, unit, gstRate, stock, costPrice, reorderLevel});
+    if(id){
+      // Only touch stock/cost if you actually typed a new value. Otherwise a stale number from when you
+      // opened Edit would overwrite sales and stock-ins made in the meantime.
+      const upd = {name, brand, category, price, unit, gstRate, reorderLevel};
+      const so = document.getElementById('pStock').dataset.orig, co = document.getElementById('pCost').dataset.orig;
+      if(String(document.getElementById('pStock').value) !== so) upd.stock = stock;
+      if(String(document.getElementById('pCost').value) !== co) upd.costPrice = costPrice;
+      await db.collection('products').doc(id).update(upd);
+    }
     else await db.collection('products').add({name, brand, category, price, unit, gstRate, stock, costPrice, reorderLevel});
     toast('Product saved');
     document.getElementById('cancelEditBtn').click();
